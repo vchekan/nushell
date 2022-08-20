@@ -1,11 +1,11 @@
 use crate::formats::value_to_json_value;
-use crate::BufferedReader;
+use crate::{BufferedReader, with_cert};
 use base64::encode;
 use nu_engine::CallExt;
 use nu_protocol::ast::Call;
 use nu_protocol::engine::{Command, EngineState, Stack};
 use nu_protocol::RawStream;
-use reqwest::{blocking::Response, StatusCode};
+use reqwest::{blocking::Response, Identity, StatusCode};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -13,7 +13,8 @@ use nu_protocol::{
     Category, Example, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
 };
 use std::collections::HashMap;
-use std::io::BufReader;
+use std::fs::File;
+use std::io::{BufReader, Read};
 
 #[derive(Clone)]
 pub struct SubCommand;
@@ -66,6 +67,12 @@ impl Command for SubCommand {
                 "insecure",
                 "allow insecure server connections when using SSL",
                 Some('k'),
+            )
+            .named(
+                "client-cert",
+                SyntaxShape::Filepath,
+                "SSL client certificate",
+                Some('c')
             )
             .filter()
             .category(Category::Network)
@@ -128,6 +135,7 @@ struct Arguments {
     password: Option<String>,
     content_type: Option<String>,
     content_length: Option<String>,
+    client_cert: Option<String>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -153,6 +161,7 @@ fn run_post(
         insecure: call.get_flag(engine_state, stack, "insecure")?,
         content_type: call.get_flag(engine_state, stack, "content-type")?,
         content_length: call.get_flag(engine_state, stack, "content-length")?,
+        client_cert: call.get_flag(engine_state, stack, "client-cert")?,
     };
     helper(engine_state, stack, call, args)
 }
@@ -197,6 +206,7 @@ fn helper(
     let headers = args.headers;
     let location = url;
     let raw = args.raw;
+    let client_cert = args.client_cert;
     let login = match (user, password) {
         (Some(user), Some(password)) => Some(encode(&format!("{}:{}", user, password))),
         (Some(user), _) => Some(encode(&format!("{}:", user))),
@@ -209,7 +219,7 @@ fn helper(
         _ => BodyType::Unknown,
     };
 
-    let mut request = http_client(args.insecure.is_some()).post(location);
+    let mut request = http_client(args.insecure.is_some(), client_cert).post(location);
 
     // set the content-type header before using e.g., request.json
     // because that will avoid duplicating the header value
@@ -435,10 +445,9 @@ fn response_to_buffer(
 // Only panics if the user agent is invalid but we define it statically so either
 // it always or never fails
 #[allow(clippy::unwrap_used)]
-fn http_client(allow_insecure: bool) -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+fn http_client(allow_insecure: bool, cert_file: Option<String>) -> reqwest::blocking::Client {
+    let mut client = reqwest::blocking::Client::builder()
         .user_agent("nushell")
-        .danger_accept_invalid_certs(allow_insecure)
-        .build()
-        .expect("Failed to build reqwest client")
+        .danger_accept_invalid_certs(allow_insecure);
+    with_cert(client, cert_file).build().expect("Failed to build reqwest client")
 }

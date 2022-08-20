@@ -1,5 +1,5 @@
-use crate::BufferedReader;
-use std::io::{BufWriter, Write};
+use crate::{BufferedReader, with_cert};
+use std::io::{BufWriter, Read, Write};
 
 use base64::encode;
 use nu_engine::CallExt;
@@ -13,9 +13,10 @@ use nu_protocol::{
 use reqwest::blocking::Response;
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::BufReader;
 
-use reqwest::StatusCode;
+use reqwest::{Identity, StatusCode};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -79,6 +80,12 @@ impl Command for SubCommand {
                 "append",
                 "if saving into a file, append to end of file",
                 Some('a'),
+            )
+            .named(
+                "client-cert",
+                SyntaxShape::Filepath,
+                "SSL client certificate",
+                Some('c')
             )
             .filter()
             .category(Category::Network)
@@ -322,6 +329,7 @@ struct Arguments {
     password: Option<String>,
     timeout: Option<Value>,
     headers: Option<Value>,
+    client_cert: Option<String>,
 }
 
 fn run_fetch(
@@ -337,6 +345,7 @@ fn run_fetch(
         password: call.get_flag(engine_state, stack, "password")?,
         timeout: call.get_flag(engine_state, stack, "timeout")?,
         headers: call.get_flag(engine_state, stack, "headers")?,
+        client_cert: call.get_flag(engine_state, stack, "client-cert")?,
     };
     helper(engine_state, stack, call, args)
 }
@@ -381,7 +390,8 @@ fn helper(
         _ => None,
     };
 
-    let client = http_client();
+    let client_cert = args.client_cert;
+    let client = http_client(client_cert);
     let mut request = client.get(url);
 
     if let Some(timeout) = timeout {
@@ -588,9 +598,8 @@ fn response_to_buffer(
 // Only panics if the user agent is invalid but we define it statically so either
 // it always or never fails
 #[allow(clippy::unwrap_used)]
-fn http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .user_agent("nushell")
-        .build()
-        .unwrap()
+fn http_client(cert_file: Option<String>) -> reqwest::blocking::Client {
+    let mut client = reqwest::blocking::Client::builder()
+        .user_agent("nushell");
+    with_cert(client, cert_file).build().unwrap()
 }
